@@ -41,10 +41,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # The same floor ci.yml uses: the build number has to keep climbing past
-  # the counter the old publishing workflow left behind, or LaunchServices
-  # keeps reading the higher build's Info.plist.
-  BUILD_NUMBER_FLOOR: "100"
+  # Higher than ci.yml's 100 on purpose: that floor carries the upstream
+  # repository's run counter past the counter the old publishing workflow left
+  # behind, while a fork starts counting at 1 again. The build number has to
+  # stay above the installed one (159 at 1.6.20) — LaunchServices keeps the
+  # higher build's record and goes on reading its Info.plist — so the floor
+  # here buys a thousand runs of room on top of that.
+  BUILD_NUMBER_FLOOR: "1000"
   GH_TOKEN: ${{ github.token }}
 
 jobs:
@@ -82,6 +85,11 @@ jobs:
             version="${GITHUB_REF_NAME#v}"
           fi
           build="$(( GITHUB_RUN_NUMBER + BUILD_NUMBER_FLOOR ))"
+          # And never at or below the build the checkout already carries: a
+          # package that is not newer than the one installed is one
+          # LaunchServices ignores the Info.plist of.
+          current="$(make --no-print-directory print-build-number)"
+          [ "$build" -gt "$current" ] || build="$(( current + 1 ))"
           make set-version VERSION="$version" BUILD="$build"
           echo "APP_VERSION=$version" >> "$GITHUB_ENV"
           echo "APP_BUILD=$build" >> "$GITHUB_ENV"

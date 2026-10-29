@@ -17,6 +17,11 @@
 # built; `main` never runs it — a package for main is a release, and
 # `release.yml` already makes those.
 #
+# The image is `xcode-27` with Xcode 27.1 selected by name, not "newest": a
+# device build has to compile against the iOS 27.1 SDK (`make ios-sdk-check`,
+# the floor that lets iPhone Duo lay the app out to its edges), the image also
+# carries a 27.2 release candidate, and `macos-26` has neither.
+#
 # The tag is reused, so it holds one package: the assets of the previous run
 # are removed before this run's are uploaded, and the notes say which commit
 # and package the link serves now. Keep the tag out of the version scheme
@@ -31,9 +36,9 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: Runner label for the build
+        description: Runner label for the build — one that carries the iOS 27.1 SDK
         type: string
-        default: macos-26
+        default: xcode-27
       tag:
         description: Release tag the package is published under
         type: string
@@ -54,7 +59,7 @@ env:
   # Higher than ci.yml's 100 on purpose: that floor carries the upstream
   # repository's run counter past the counter the old publishing workflow left
   # behind, while a fork starts counting at 1 again. The build number has to
-  # stay above the installed one (159 at 1.6.20) — LaunchServices keeps the
+  # stay above the installed one (160 at 1.6.21) — LaunchServices keeps the
   # higher build's record and goes on reading its Info.plist — so the floor
   # here buys a thousand runs of room on top of that.
   BUILD_NUMBER_FLOOR: "1000"
@@ -64,18 +69,21 @@ env:
 
 jobs:
   deb-roothide:
-    runs-on: ${{ github.event.inputs.runner || 'macos-26' }}
+    runs-on: ${{ github.event.inputs.runner || 'xcode-27' }}
     timeout-minutes: 60
 
     steps:
       - name: Check out iGhostVT
         uses: actions/checkout@v7
 
-      - name: Select newest Xcode
+      # The iOS 27.1 SDK, which `make`'s ios-sdk-check requires of every
+      # device build (a package is built by one). Named, not "newest": the
+      # image also ships a 27.2 release candidate, which sorts after it.
+      - name: Select Xcode 27.1
         run: |
-          latest="$(ls -d /Applications/Xcode*.app | sort -V | tail -n1)"
-          sudo xcode-select -s "$latest/Contents/Developer"
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
           xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
 
       - name: Install packaging tools
         run: |

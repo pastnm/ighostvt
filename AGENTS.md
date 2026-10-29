@@ -1955,9 +1955,11 @@ References: `roothide/Developer`'s `vroot.md`, and `roothide/libroothide`'s
   `back in front:` line in the journal (category `ghostty`). The same defect
   in the library itself belongs in libghostty-spm, not here.
 - `.github/workflows/deb-release.yml` builds the roothide package with
-  `make deb-roothide` on `macos-26` on a push to a `fix/**` branch (or by
-  `workflow_dispatch`, which also takes the runner label and the tag) and
-  uploads it, with `SHA256SUMS.roothide`, to the Release of one fixed tag
+  `make deb-roothide` on the `xcode-27` image (Xcode 27.1 selected by name:
+  a device build needs the iOS 27.1 SDK, which `make ios-sdk-check` enforces)
+  on a push to a `fix/**` branch — or by `workflow_dispatch`, which also
+  takes the runner label and the tag — and uploads it, with
+  `SHA256SUMS.roothide`, to the Release of one fixed tag
   (`deb-latest` unless the dispatch says otherwise), deleting the previous
   run's assets first:
   `https://github.com/<owner>/<repo>/releases/download/deb-latest/<package>.deb`.

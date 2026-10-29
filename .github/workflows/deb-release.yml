@@ -11,6 +11,12 @@
 # second token: the package goes to the repository's own Release, uploaded
 # with `GITHUB_TOKEN`, which is why this file asks for `contents: write`.
 #
+# It runs by itself on a push to a `fix/**` branch, so a branch pushed to this
+# fork arrives as a package from a direct link without anyone dispatching
+# anything. `workflow_dispatch` is how another branch, or another tag, is
+# built; `main` never runs it — a package for main is a release, and
+# `release.yml` already makes those.
+#
 # The tag is reused, so it holds one package: the assets of the previous run
 # are removed before this run's are uploaded, and the notes say which commit
 # and package the link serves now. Keep the tag out of the version scheme
@@ -19,6 +25,9 @@
 name: Deb release
 
 on:
+  push:
+    branches:
+      - "fix/**"
   workflow_dispatch:
     inputs:
       runner:
@@ -34,10 +43,11 @@ on:
 permissions:
   contents: write
 
-# One tag, one package: a second dispatch waits for the first rather than
-# deleting the assets out from under it.
+# One tag, one package: a second run waits for the first rather than deleting
+# the assets out from under it. A push names no tag, so it shares the group
+# with a dispatch that kept the default one.
 concurrency:
-  group: ighostvt-deb-release-${{ github.event.inputs.tag }}
+  group: ighostvt-deb-release-${{ github.event.inputs.tag || 'deb-latest' }}
   cancel-in-progress: false
 
 env:
@@ -49,10 +59,12 @@ env:
   # here buys a thousand runs of room on top of that.
   BUILD_NUMBER_FLOOR: "1000"
   GH_TOKEN: ${{ github.token }}
+  # A push has no input to read it from.
+  DEB_TAG: ${{ github.event.inputs.tag || 'deb-latest' }}
 
 jobs:
   deb-roothide:
-    runs-on: ${{ github.event.inputs.runner }}
+    runs-on: ${{ github.event.inputs.runner || 'macos-26' }}
     timeout-minutes: 60
 
     steps:
@@ -119,7 +131,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="${{ github.event.inputs.tag }}"
+          tag="$DEB_TAG"
           description="Built by ${GITHUB_WORKFLOW} from ${GITHUB_SHA} at run ${GITHUB_RUN_NUMBER} — an on-demand package, not a release. Install it, then bring the app back to the front after a while off screen to check the fix."
           if gh release view "$tag" >/dev/null 2>&1; then
             # The API, not `gh release delete-asset`: the deletion is the

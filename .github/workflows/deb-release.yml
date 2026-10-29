@@ -133,28 +133,45 @@ jobs:
 
       # The previous run's assets go first: one package per tag means a link
       # never resolves to a file whose name the notes do not mention. The
-      # release is created on the first run and only edited after that, so
-      # the tag keeps pointing at the commit it was made for.
+      # release is created on the first run and edited after that — but its
+      # title, its notes, the commit the tag points at and the Latest mark are
+      # all rewritten every run, because a Release that keeps its first run's
+      # title, date and commit reads as one that was never updated even when
+      # the package beside it is new.
       - name: Publish to the release
         shell: bash
         run: |
           set -euo pipefail
           tag="$DEB_TAG"
-          description="Built by ${GITHUB_WORKFLOW} from ${GITHUB_SHA} at run ${GITHUB_RUN_NUMBER} — an on-demand package, not a release. Install it, then bring the app back to the front after a while off screen to check the fix."
+          deb="$(ls build/Packages/*.deb | head -n1)"
+          name="$(basename "$deb")"
+          digest="$(shasum -a 256 "$deb" | awk '{print $1}')"
+          title="iGhostVT ${APP_VERSION} dev build (build ${APP_BUILD})"
+          description="Built by ${GITHUB_WORKFLOW} from ${GITHUB_SHA} at run ${GITHUB_RUN_NUMBER} — an on-demand package, not a release. Install it, then bring the app back to the front after a while off screen to check the fix.
+
+${name}
+SHA-256: ${digest}"
           if gh release view "$tag" >/dev/null 2>&1; then
             # The API, not `gh release delete-asset`: the deletion is the
             # point, so nothing here should be waiting on a confirmation.
             for id in $(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq '.assets[].id'); do
               gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${id}"
             done
-            gh release edit "$tag" --notes "$description"
+            gh release edit "$tag" --title "$title" --notes "$description" --latest
           else
             gh release create "$tag" \
               --target "$GITHUB_SHA" \
-              --title "iGhostVT dev builds" \
+              --title "$title" \
               --notes "$description" \
-              --latest=false
+              --latest
           fi
+          # The tag is a pointer at the commit that built the package beside
+          # it, moved every run so the release page names the build it holds;
+          # the direct link is the tag's name, so it never changes. Forced on
+          # purpose: this workflow owns `deb-latest`, and it is no one's
+          # release tag.
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" \
+            -f sha="${GITHUB_SHA}" -F force=true >/dev/null
           gh release upload "$tag" --clobber build/Packages/*.deb build/Packages/SHA256SUMS.roothide
           echo "### Download" >> "$GITHUB_STEP_SUMMARY"
           for deb in build/Packages/*.deb; do

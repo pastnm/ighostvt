@@ -149,8 +149,8 @@ jobs:
           title="iGhostVT ${APP_VERSION} dev build (build ${APP_BUILD})"
           description="Built by ${GITHUB_WORKFLOW} from ${GITHUB_SHA} at run ${GITHUB_RUN_NUMBER} — an on-demand package, not a release. Install it, then bring the app back to the front after a while off screen to check the fix.
 
-${name}
-SHA-256: ${digest}"
+          ${name}
+          SHA-256: ${digest}"
           if gh release view "$tag" >/dev/null 2>&1; then
             # The API, not `gh release delete-asset`: the deletion is the
             # point, so nothing here should be waiting on a confirmation.

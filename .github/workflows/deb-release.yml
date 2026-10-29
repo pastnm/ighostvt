@@ -1,31 +1,31 @@
-# A roothide package built on demand and published under one fixed Release
-# tag, so a device can install the branch under test from a direct link:
+# A roothide package built on demand, published as its own Release — one per
+# build, the way a version is — so the newest one is always here:
 #
-#   https://github.com/<owner>/<repo>/releases/download/deb-latest/<package>.deb
+#   https://github.com/<owner>/<repo>/releases/latest/download/<package>.deb
 #
-# This is not a release. `ci.yml` still builds and verifies every flavour on a
-# push, and `release.yml` still publishes what CI built when a tag is cut; no
-# version is bumped here and nothing is tagged. The point is a build from a
-# branch — a rendering fix waiting on a few hours of screen time, say — on
-# the device without waiting for a release, and without an APT repo or a
-# second token: the package goes to the repository's own Release, uploaded
-# with `GITHUB_TOKEN`, which is why this file asks for `contents: write`.
+# `releases/latest/download` follows whichever Release is marked Latest, which
+# this workflow sets on every build, so that link needs no maintenance as
+# builds come. Each build keeps its own tag (`deb-<version>-<build>`) and the
+# date it was published: a single reused tag cannot do that — GitHub writes a
+# release's date once, at creation, and editing it later never moves it.
+#
+# This is not a release of iGhostVT. `ci.yml` still builds and verifies every
+# flavour on a push, and `release.yml` still publishes what CI built when a
+# version tag is cut; no version is bumped here. The point is a build from a
+# branch — a rendering fix waiting on a few hours of screen time, say — on the
+# device without waiting for a release, and without an APT repo or a second
+# token: the package goes to the repository's own Releases, uploaded with
+# `GITHUB_TOKEN`, which is why this file asks for `contents: write`.
 #
 # It runs by itself on a push to a `fix/**` branch, so a branch pushed to this
 # fork arrives as a package from a direct link without anyone dispatching
-# anything. `workflow_dispatch` is how another branch, or another tag, is
-# built; `main` never runs it — a package for main is a release, and
-# `release.yml` already makes those.
+# anything. `workflow_dispatch` is how another branch is built; `main` never
+# runs it — a package for main is a release, and `release.yml` makes those.
 #
 # The image is `xcode-27` with Xcode 27.1 selected by name, not "newest": a
 # device build has to compile against the iOS 27.1 SDK (`make ios-sdk-check`,
 # the floor that lets iPhone Duo lay the app out to its edges), the image also
 # carries a 27.2 release candidate, and `macos-26` has neither.
-#
-# The tag is reused, so it holds one package: the assets of the previous run
-# are removed before this run's are uploaded, and the notes say which commit
-# and package the link serves now. Keep the tag out of the version scheme
-# (`vX.Y.Z`) so `release.sh` never mistakes it for a release of its own.
 
 name: Deb release
 
@@ -39,20 +39,15 @@ on:
         description: Runner label for the build — one that carries the iOS 27.1 SDK
         type: string
         default: xcode-27
-      tag:
-        description: Release tag the package is published under
-        type: string
-        default: deb-latest
 
 # The upload writes to the repository's releases; everything else is read.
 permissions:
   contents: write
 
-# One tag, one package: a second run waits for the first rather than deleting
-# the assets out from under it. A push names no tag, so it shares the group
-# with a dispatch that kept the default one.
+# One build at a time: two finishing together would fight over which Release
+# is Latest, and `releases/latest/download` would answer with either.
 concurrency:
-  group: ighostvt-deb-release-${{ github.event.inputs.tag || 'deb-latest' }}
+  group: ighostvt-deb-release
   cancel-in-progress: false
 
 env:
@@ -64,8 +59,6 @@ env:
   # here buys a thousand runs of room on top of that.
   BUILD_NUMBER_FLOOR: "1000"
   GH_TOKEN: ${{ github.token }}
-  # A push has no input to read it from.
-  DEB_TAG: ${{ github.event.inputs.tag || 'deb-latest' }}
 
 jobs:
   deb-roothide:
@@ -131,46 +124,48 @@ jobs:
           cd build/Packages
           shasum -a 256 *.deb | tee SHA256SUMS.roothide
 
-      # The release is made again every run, not edited. A release page shows
-      # when the release was *published*, and neither an edit nor a new asset
-      # changes that: edited in place it sat at the first run's timestamp for
-      # hours, reading as a release nobody had touched while the package in it
-      # was a version newer. So the old one is deleted (its assets go with it),
-      # the tag is moved to this commit first — a release made on a tag that
-      # already exists keeps that tag's commit — and a new one is published,
-      # titled and noted for this build. The direct link is the tag's name, so
-      # it never changes.
-      - name: Publish to the release
+      # One Release per build: the tag carries the version and the build
+      # number (`deb-1.6.21-1006`), so nothing is overwritten, every entry
+      # keeps the date it was published, and the newest is what
+      # `releases/latest/download` answers with — this step marks it Latest.
+      # A single reused tag could not: GitHub writes a release's date once,
+      # at creation, and editing it never moves that date.
+      #
+      # The one `deb-latest` release the earlier workflow kept is retired
+      # here, tag and all; the fixed link it served is replaced by
+      # `releases/latest/download`, which follows the newest build.
+      - name: Publish the release
         shell: bash
         run: |
           set -euo pipefail
-          tag="$DEB_TAG"
+          tag="deb-${APP_VERSION}-${APP_BUILD}"
           deb="$(ls build/Packages/*.deb | head -n1)"
           name="$(basename "$deb")"
           digest="$(shasum -a 256 "$deb" | awk '{print $1}')"
           title="iGhostVT ${APP_VERSION} dev build (build ${APP_BUILD})"
-          description="Built by ${GITHUB_WORKFLOW} from ${GITHUB_SHA} at run ${GITHUB_RUN_NUMBER} — an on-demand package, not a release. Install it, then bring the app back to the front after a while off screen to check the fix.
+          description="Built by ${GITHUB_WORKFLOW} from ${GITHUB_SHA} at run ${GITHUB_RUN_NUMBER} — an on-demand build, not a release. Install it, then bring the app back to the front after a while off screen to check the fix.
 
           ${name}
           SHA-256: ${digest}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            # Forced on purpose: this workflow owns `deb-latest`, and it is no
-            # one's release tag.
-            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" \
-              -f sha="${GITHUB_SHA}" -F force=true >/dev/null
-            # `--cleanup-tag` is off by default and stays off: the tag is the
-            # link, and it is moved above, never deleted.
-            gh release delete "$tag" --yes
+          if gh release view deb-latest >/dev/null 2>&1; then
+            gh release delete deb-latest --yes --cleanup-tag
           fi
-          gh release create "$tag" \
-            --target "$GITHUB_SHA" \
-            --title "$title" \
-            --notes "$description" \
-            --latest
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # The same run dispatched again: its tag is already there, and its
+            # date is already right.
+            gh release edit "$tag" \
+              --title "$title" \
+              --notes "$description" \
+              --latest
+          else
+            gh release create "$tag" \
+              --target "$GITHUB_SHA" \
+              --title "$title" \
+              --notes "$description" \
+              --latest
+          fi
           gh release upload "$tag" --clobber build/Packages/*.deb build/Packages/SHA256SUMS.roothide
           echo "### Download" >> "$GITHUB_STEP_SUMMARY"
-          for deb in build/Packages/*.deb; do
-            url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/$(basename "$deb")"
-            echo "- [$url]($url)" >> "$GITHUB_STEP_SUMMARY"
-          done
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/${name}"
+          echo "- [$url]($url)" >> "$GITHUB_STEP_SUMMARY"
           gh release view "$tag" --json assets -q '.assets[] | "\(.name)\t\(.size)"'

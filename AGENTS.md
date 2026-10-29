@@ -1958,13 +1958,15 @@ References: `roothide/Developer`'s `vroot.md`, and `roothide/libroothide`'s
   `make deb-roothide` on the `xcode-27` image (Xcode 27.1 selected by name:
   a device build needs the iOS 27.1 SDK, which `make ios-sdk-check` enforces)
   on a push to a `fix/**` branch — or by `workflow_dispatch`, which also
-  takes the runner label and the tag — and uploads it, with
-  `SHA256SUMS.roothide`, to the Release of one fixed tag
-  (`deb-latest` unless the dispatch says otherwise), deleting the previous
-  run's assets first:
-  `https://github.com/<owner>/<repo>/releases/download/deb-latest/<package>.deb`.
-  It uses `GITHUB_TOKEN` (`permissions: contents: write`), bumps no version,
-  and replaces neither `ci.yml` nor `release.yml`.
+  takes the runner label — and publishes it, with `SHA256SUMS.roothide`, as
+  its own Release tagged `deb-<version>-<build>`, marked Latest, so every
+  build keeps its own date the way a version's release does:
+  `https://github.com/<owner>/<repo>/releases/latest/download/<package>.deb`.
+  A single reused tag cannot keep a date — GitHub writes a release's
+  published date once — which is why the older `deb-latest` release is
+  deleted by the first run of this shape. It uses `GITHUB_TOKEN`
+  (`permissions: contents: write`), bumps no version, and replaces neither
+  `ci.yml` nor `release.yml`.
 - Nothing in this checkout compiles on an iOS device: the app needs Xcode on
   a Mac. Dispatch the workflow (or `ci.yml`) and install the `.deb` it
   writes; do not try to build the app in place.

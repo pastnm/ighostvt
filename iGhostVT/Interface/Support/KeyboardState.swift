@@ -37,6 +37,7 @@ final class KeyboardState: ObservableObject {
     weak var window: UIWindow? {
         didSet {
             guard window !== oldValue, let lastScreenFrame else { return }
+            isVisible = isSoftwareKeyboard(lastScreenFrame)
             overlap = overlap(of: lastScreenFrame)
         }
     }
@@ -65,7 +66,7 @@ final class KeyboardState: ObservableObject {
         let info = notification.userInfo
         guard let screenFrame = info?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
         lastScreenFrame = screenFrame
-        let visible = Self.isSoftwareKeyboard(screenFrame)
+        let visible = isSoftwareKeyboard(screenFrame)
         let overlap = overlap(of: screenFrame)
         guard visible != isVisible || overlap != self.overlap else { return }
         let duration = info?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
@@ -93,8 +94,15 @@ final class KeyboardState: ObservableObject {
         return .interpolatingSpring(mass: 3, stiffness: 1000, damping: 500, initialVelocity: 0)
     }
 
-    private static func isSoftwareKeyboard(_ screenFrame: CGRect) -> Bool {
-        let visibleHeight = screenFrame.intersection(UIScreen.main.bounds).height
+    /// The frame is in the coordinates of the screen this window is on, so
+    /// that is the screen it is clipped against — never `UIScreen.main`,
+    /// which on a phone with two displays can be the other one: clipped to
+    /// the outer display's bounds, the keys on the inner one read as an
+    /// accessory bar. No window yet means no screen to measure against;
+    /// the window's arrival measures the last frame again.
+    private func isSoftwareKeyboard(_ screenFrame: CGRect) -> Bool {
+        guard let screen = window?.windowScene?.screen else { return false }
+        let visibleHeight = screenFrame.intersection(screen.bounds).height
         // The accessory bar tops out well under 100pt; any real keyboard
         // (even the floating one collapsed to a toolbar does not post here)
         // is far taller.

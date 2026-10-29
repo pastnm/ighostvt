@@ -1391,6 +1391,22 @@ the catalog's generated symbols, which is why the menu's entry is keyed
 - `make check` — project/packaging validation
 - `make build` bumps `CURRENT_PROJECT_VERSION` before xcodebuild, so
   `Version.xcconfig` comes out of a build dirty by design
+- **Device builds compile against the iOS 27.1 SDK or later**
+  (`IOS_SDK_MINIMUM`, enforced by `make ios-sdk-check` ahead of `build`
+  and `ipa`; never part of `check`, which `make release` runs on a Mac
+  that builds nothing for a device). The SDK, not the deployment target,
+  is what iPhone Duo lays an app out by: built against 26 (1.6.20 was,
+  on CI's Xcode 26.6) it sits centred on the inner display with empty
+  space around it; against 27.0 it fills the display but keeps off the
+  side the status bar runs down; against 27.1 it reaches every edge, and
+  bars from navigation containers may go vertical. The floor stays iOS
+  15. A Mac whose Xcode has an older SDK builds with `DEVELOPER_DIR`
+  pointed at one that has it; CI's three iOS jobs run on the `xcode-27`
+  image with Xcode 27.1 selected by name (the image also carries a 27.2
+  release candidate, which "newest" would pick), and the macOS zip stays
+  on `macos-26` — Catalyst compiles against the macOS SDK. A simulator
+  build still uses whatever simulator SDK the Xcode has; the Duo
+  simulator shows the 27.0 behaviour for a 27.0 one.
 - `make test` — the PTY harness, the CLI's screen-renderer tests, the
   remote and ZMODEM harnesses, and the relay harness where Go is installed
   (`make harness` builds `ighostvtd-io` and
@@ -1639,6 +1655,32 @@ Gotchas that bit us:
   or the strip's toggle), so a maximized window, whose controls hide until
   asked for, keeps its full height. Zero on the Mac, which places its own
   traffic lights, and before iOS 26.
+- **Regular width is not an iPad, and an inset has a side.** The window's
+  layout follows its horizontal size class alone (`RootView.isRegularWidth`):
+  the sidebar and the strip wherever the width is regular — an iPad, the
+  Mac, a large iPhone held sideways, iPhone Duo's inner display either way
+  up — and the bottom bar wherever it is compact, the Duo's outer display
+  included. Nothing hung off either layout may ask the idiom instead: the
+  sidebar's rows reordered on an iPad only (`TabReorder`, `.pad`), so a Duo
+  opened to its inner display showed a sidebar whose rows would not move.
+  Insets are read edge by edge and never mirrored, and a directional one
+  is compared with a directional one: the Duo's status bar runs down one
+  side, and `WindowControlsInset` took a right-to-left layout's leading
+  inset — the right edge's — less the *left* edge's plain one, so in
+  Arabic a right-hand inset read as window controls and pushed the
+  sidebar's top row along. The keyboard is measured on the screen its
+  window is on (`KeyboardState`), never `UIScreen.main`, which on a phone
+  with two displays can be the other one. Open: the Duo simulator (27.1
+  runtime) draws the status bar across the top of the inner display held
+  sideways, over the strip, while the same scene reports a top inset of
+  zero, a 2 pt `statusBarManager` frame, and the status bar as an
+  occlusion region down the trailing column (84 × 120 pt) — the device
+  decides which is true. Were it the top, `UIView.LayoutRegion.bar(onEdge:
+  .top, extent:)` (iOS 27.1) says where a top bar goes, 20 pt down for
+  the strip's height, which is where a system navigation bar sits there. Nothing reads the hinge or the
+  fold's reserved region: the terminal is scrolling text, which may run
+  under the fold, and its grid already follows every resize, a fold
+  included (the winsize gotcha below).
 - `SMAppService` is `macCatalyst(16.0)`, above this app's iOS 15 deployment
   target, so every call sits behind `#available`. The packager raises the
   staged bundle's `LSMinimumSystemVersion` to 13.0, since a Catalyst app built

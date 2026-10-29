@@ -79,9 +79,14 @@ struct WindowControlsInsetReader: UIViewRepresentable {
                 }
                 let vertical = directionalEdgeInsets(for: .safeArea(cornerAdaptation: .vertical))
                 let horizontal = directionalEdgeInsets(for: .safeArea(cornerAdaptation: .horizontal))
+                // Leading against leading: in a right-to-left language the
+                // adapted leading inset is the right edge's, and taken from
+                // the left edge's plain one it counted a right-hand inset —
+                // the side status column of a foldable, a notch — as window
+                // controls, and pushed the sidebar's top row past nothing.
                 return WindowControlsInset(
                     top: max(0, vertical.top - safeAreaInsets.top),
-                    leading: max(0, horizontal.leading - safeAreaInsets.left),
+                    leading: max(0, horizontal.leading - safeAreaLeading),
                     safeAreaLeading: safeAreaLeading,
                 )
             #endif

@@ -69,6 +69,14 @@ FLOOR_AUDIT         := $(ROOT_DIR)/Scripts/audit-ios-floor.sh
 # the project, which is the app's and the daemon's (the widget's is higher and
 # only keeps the widget off an older system). `check` reads the same number.
 IOS_DEPLOYMENT_FLOOR := $(shell sed -n 's/.*IPHONEOS_DEPLOYMENT_TARGET = \([0-9.]*\);.*/\1/p' "$(PROJECT)/project.pbxproj" | sort -V | head -1)
+# The oldest iphoneos SDK a device build may compile against. The SDK, not
+# the deployment target, decides how iPhone Duo lays the app out: built
+# against iOS 27.1 or later the app reaches every edge of both displays,
+# against 27.0 it still keeps off the side the status bar runs down, and
+# against 26 it sits centred on the inner display with empty space round
+# it. A Mac whose Xcode has an older SDK builds with DEVELOPER_DIR pointed
+# at one that has it; the deployment floor above is untouched by this.
+IOS_SDK_MINIMUM     := 27.1
 MAC_DAEMON_LOADER   := $(ROOT_DIR)/Scripts/mac-daemon.sh
 MAC_PACKAGER        := $(ROOT_DIR)/Scripts/package-mac.sh
 MAC_UPDATE_FROM_GITHUB := $(ROOT_DIR)/Scripts/mac-update-from-github.sh
@@ -103,7 +111,7 @@ ifeq ($(BUILD_NUMBER),)
 $(error CURRENT_PROJECT_VERSION is missing from Configuration/Version.xcconfig)
 endif
 
-.PHONY: all help print-version print-build-number print-deb-path print-mac-zip-path set-version bump-build check test harness relay-harness relay-weak-network build deb deb-roothide deb-rootless ipa mac-app mac-daemon mac-daemon-uninstall mac-run mac-zip-check mac-zip mac-update-from-github release clean
+.PHONY: all help print-version print-build-number print-deb-path print-mac-zip-path set-version bump-build ios-sdk-check check test harness relay-harness relay-weak-network build deb deb-roothide deb-rootless ipa mac-app mac-daemon mac-daemon-uninstall mac-run mac-zip-check mac-zip mac-update-from-github release clean
 
 all: deb
 
@@ -119,6 +127,7 @@ help:
 	@echo "  relay-harness       The relay end to end (needs go; RELAY_HARNESS_FLAGS=--stress for the long runs)"
 	@echo "  relay-weak-network  The relay stress runs over netem-degraded links (needs docker)"
 	@echo "  check       Validate the project and packaging inputs"
+	@echo "  ios-sdk-check  Refuse a device build below the iOS $(IOS_SDK_MINIMUM) SDK (DEVELOPER_DIR picks the Xcode)"
 	@echo "  mac-run     Build the Mac Catalyst app, load ighostvtd as a LaunchAgent, open the app"
 	@echo "  mac-app     Build the Mac Catalyst app only"
 	@echo "  mac-daemon  Build ighostvtd for macOS and (re)load it as a per-user LaunchAgent"
@@ -153,6 +162,15 @@ bump-build:
 	@if [ -n "$${CI:-}" ]; then echo "==> CI: keeping build $(BUILD_NUMBER)"; else \
 		"$(VERSION_APPLIER)" "$(APP_VERSION)" $$(( $(BUILD_NUMBER) + 1 )) >/dev/null; \
 		echo "==> build $$(( $(BUILD_NUMBER) + 1 ))"; fi
+
+# Device builds only: `check` also runs where nothing is built for a device
+# (`make release` on a Mac whose Xcode is older — CI builds the packages).
+ios-sdk-check:
+	@sdk="$$(xcrun --sdk iphoneos --show-sdk-version 2>/dev/null || true)"; \
+	[[ -n "$$sdk" ]] || { echo "error: no iphoneos SDK — select an Xcode (xcode-select -s, or DEVELOPER_DIR)" >&2; exit 69; }; \
+	[[ "$$(printf '%s\n%s\n' "$(IOS_SDK_MINIMUM)" "$$sdk" | sort -V | head -n1)" == "$(IOS_SDK_MINIMUM)" ]] \
+		|| { echo "error: device builds need the iOS $(IOS_SDK_MINIMUM) SDK or later, and $$(xcrun --sdk iphoneos --show-sdk-path) is iOS $$sdk — below it iPhone Duo keeps the app off the screen's edges. Point DEVELOPER_DIR at an Xcode that has it." >&2; exit 69; }; \
+	echo "==> iphoneos SDK $$sdk"
 
 check:
 	@command -v xcodebuild >/dev/null || { echo "error: xcodebuild is required" >&2; exit 69; }
@@ -353,7 +371,7 @@ relay-weak-network:
 		-o "$$harness_dir/relay-harness" && \
 	"$(ROOT_DIR)/Scripts/relay-weak-network.sh" "$$harness_dir/relay-harness"
 
-build: check test bump-build
+build: ios-sdk-check check test bump-build
 	XCBUILD_LABEL=build-ios $(DEVICE_XCODEBUILD) \
 		-configuration "$(CONFIGURATION)" \
 		-scheme "$(SCHEME)" \
@@ -404,7 +422,7 @@ deb: build
 # ones it finds against its source. The Live Activity extension is sealed
 # first, inside out, with none either. Like mac-zip it needs nothing but
 # Xcode, so it neither needs nor runs `check`.
-ipa:
+ipa: ios-sdk-check
 	XCBUILD_LABEL=build-ghost-remote $(DEVICE_XCODEBUILD) \
 		-configuration "$(CONFIGURATION)" \
 		-scheme "$(GHOST_REMOTE_SCHEME)" \

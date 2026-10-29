@@ -51,14 +51,13 @@ struct TabSwitcherView: View {
                             in: tabManager,
                             pacing: reorderPacing,
                             preview: .card,
-                            onPhone: true,
                             window: window,
                         )
                     }
                     newTabCard
                 }
                 .padding(DS.Padding.l)
-                .tabReorderContainer(onPhone: true)
+                .tabReorderContainer()
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {

@@ -17,6 +17,14 @@
 # main gets the run `release.yml` publishes, and the way back once an
 # artifact is past its thirty days.
 #
+# The three iOS jobs run on the `xcode-27` image with Xcode 27.1 selected
+# by name: every device build compiles against the iOS 27.1 SDK or later
+# (`make ios-sdk-check`), the SDK that lets iPhone Duo lay the app out to
+# the edges of both of its displays — built against 26, as 1.6.20 was, the
+# app sits centred on the inner display. The macOS zip stays on `macos-26`:
+# a Catalyst build compiles against the macOS SDK, which this does not
+# concern.
+#
 # The version is the commit's own (`Configuration/Version.xcconfig`, written
 # by `make set-version` in the release commit), so the packages a push builds
 # are already named for the tag that follows it. Only a dispatch on a tag
@@ -72,11 +80,11 @@ on:
       runner_roothide:
         description: Runner label for the roothide .deb
         type: string
-        default: macos-26
+        default: xcode-27
       runner_rootless:
         description: Runner label for the rootless .deb
         type: string
-        default: macos-26
+        default: xcode-27
       runner_macos:
         description: Runner label for the macOS zip
         type: string
@@ -84,7 +92,7 @@ on:
       runner_ipa:
         description: Runner label for the Ghost Remote .ipa
         type: string
-        default: macos-26
+        default: xcode-27
 
 permissions:
   contents: read
@@ -111,18 +119,22 @@ env:
 jobs:
   package-roothide:
     if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform == 'all' || github.event.inputs.platform == 'roothide'
-    runs-on: ${{ github.event.inputs.runner_roothide || 'macos-26' }}
+    runs-on: ${{ github.event.inputs.runner_roothide || 'xcode-27' }}
     timeout-minutes: 60
 
     steps:
       - name: Check out iGhostVT
         uses: actions/checkout@v7
 
-      - name: Select newest Xcode
+      # The iOS 27.1 SDK, which `make`'s ios-sdk-check requires of every
+      # device build: below it iPhone Duo keeps the app off the edges of
+      # its displays. Named, not "newest": the image's 27.2 release
+      # candidate sorts after it.
+      - name: Select Xcode 27.1
         run: |
-          latest="$(ls -d /Applications/Xcode*.app | sort -V | tail -n1)"
-          sudo xcode-select -s "$latest/Contents/Developer"
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
           xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
 
       # The runner image ships with third-party taps Homebrew no longer trusts
       # by default and warns about on every invocation; none of them is used.
@@ -179,18 +191,22 @@ jobs:
 
   package-rootless:
     if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform == 'all' || github.event.inputs.platform == 'rootless'
-    runs-on: ${{ github.event.inputs.runner_rootless || 'macos-26' }}
+    runs-on: ${{ github.event.inputs.runner_rootless || 'xcode-27' }}
     timeout-minutes: 60
 
     steps:
       - name: Check out iGhostVT
         uses: actions/checkout@v7
 
-      - name: Select newest Xcode
+      # The iOS 27.1 SDK, which `make`'s ios-sdk-check requires of every
+      # device build: below it iPhone Duo keeps the app off the edges of
+      # its displays. Named, not "newest": the image's 27.2 release
+      # candidate sorts after it.
+      - name: Select Xcode 27.1
         run: |
-          latest="$(ls -d /Applications/Xcode*.app | sort -V | tail -n1)"
-          sudo xcode-select -s "$latest/Contents/Developer"
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
           xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
 
       - name: Install packaging tools
         run: |
@@ -315,18 +331,22 @@ jobs:
 
   package-ipa:
     if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform == 'all' || github.event.inputs.platform == 'ipa'
-    runs-on: ${{ github.event.inputs.runner_ipa || 'macos-26' }}
+    runs-on: ${{ github.event.inputs.runner_ipa || 'xcode-27' }}
     timeout-minutes: 60
 
     steps:
       - name: Check out iGhostVT
         uses: actions/checkout@v7
 
-      - name: Select newest Xcode
+      # The iOS 27.1 SDK, which `make`'s ios-sdk-check requires of every
+      # device build: below it iPhone Duo keeps the app off the edges of
+      # its displays. Named, not "newest": the image's 27.2 release
+      # candidate sorts after it.
+      - name: Select Xcode 27.1
         run: |
-          latest="$(ls -d /Applications/Xcode*.app | sort -V | tail -n1)"
-          sudo xcode-select -s "$latest/Contents/Developer"
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
           xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
 
       # Like the Mac zip, nothing but Xcode: `make ipa` does not run `check`.
       - name: Install build tools

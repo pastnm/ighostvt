@@ -1896,3 +1896,29 @@ reuse these native binaries; `libvroot` itself is RootHide-specific and is not
 made rootless-compatible by changing the Debian architecture label.
 References: `roothide/Developer`'s `vroot.md`, and `roothide/libroothide`'s
 `init.c` and `stub.h`. `libroot` is a separate Rootless v2 path API.
+
+## Coming back to the front, and a package built on demand
+
+- `LockableTerminalView` finishes what a return to the foreground starts. On
+  `UIScene.didActivateNotification` and `UIApplication.didBecomeActiveNotification`
+  it lays the view out once the runloop has settled, calls the library's
+  public `fitToSize()`, and puts the engine's IOSurface layer back at the
+  view's bounds when the picture is already the size of the view but the
+  layer that shows it is not — the reported "rows cut to their tails, a
+  prompt halfway across the pane, colors a redraw behind" state after a
+  terminal sat in `ssh` for hours and the app came back. A layer whose
+  surface lags the view is left to the library, whose resize throttle holds
+  it at the old size on purpose. The pass is skipped when neither the view
+  nor its layer moved, ends three seconds after the return, and leaves a
+  `back in front:` line in the journal (category `ghostty`). The same defect
+  in the library itself belongs in libghostty-spm, not here.
+- `.github/workflows/deb-release.yml` (`workflow_dispatch`) builds the
+  roothide package with `make deb-roothide` on `macos-26` and uploads it,
+  with `SHA256SUMS.roothide`, to the Release of one fixed tag (`deb-latest`
+  unless the dispatch says otherwise), deleting the previous run's assets
+  first: `https://github.com/<owner>/<repo>/releases/download/deb-latest/<package>.deb`.
+  It uses `GITHUB_TOKEN` (`permissions: contents: write`), bumps no version,
+  and replaces neither `ci.yml` nor `release.yml`.
+- Nothing in this checkout compiles on an iOS device: the app needs Xcode on
+  a Mac. Dispatch the workflow (or `ci.yml`) and install the `.deb` it
+  writes; do not try to build the app in place.

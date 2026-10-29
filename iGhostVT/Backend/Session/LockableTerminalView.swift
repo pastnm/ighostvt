@@ -5,6 +5,8 @@
 
 import GameController
 import GhosttyTerminal
+import IOSurface
+import QuartzCore
 import UIKit
 
 /// The app's terminal view: `TerminalView` plus the two locks.
@@ -283,6 +285,249 @@ final class LockableTerminalView: TerminalView {
         reloadInputViews()
     }
 
+    // MARK: - Back in front
+
+    // A return to the front can leave the terminal drawn at the size it had
+    // when it left. The engine's picture — an IOSurface, the sublayer's
+    // contents — is rendered again at the view's size when the app comes
+    // back (the metrics sync takes the new bounds), but the sublayer that
+    // hands that picture to the screen can still sit at the old one, so the
+    // new frame is shown squeezed into the old: rows cut down to their
+    // tails, a prompt halfway across the pane, colors a redraw behind —
+    // until ⌃L forces a redraw, which changes nothing in the grid and
+    // everything on the screen. The grid itself was never wrong; the
+    // surface was rendered at the new size all along.
+    //
+    // The library places that layer from `layoutSubviews` and from its own
+    // metrics callback (`UITerminalView+Lifecycle.sublayerFrame`, which
+    // holds the layer at `syncedViewSize` while a resize throttle runs), but
+    // both read state that a return to the front rearranges: the bounds come
+    // back with the keyboard's dismissal, animated over about a quarter of a
+    // second, and the throttle — on for a tab with a program in front of its
+    // shell, `ssh` on a forwarded port being one — holds the surface for
+    // 128 ms per size. A pass that lands between two of those can place the
+    // layer at a size the surface never took, or leave it at the old one.
+    // The pass below is the library's own work, run once the runloop has
+    // laid the view out again, and it is skipped when neither the view nor
+    // the layer moved.
+
+    /// Whether the return-to-front observers are in the notification centre.
+    /// A view is made whenever a surface mounts, so this matters:
+    /// `didMoveToWindow` runs again on every reattach.
+    private var observesComingBack = false
+
+    /// How long after a return the passes keep watching. Long enough for the
+    /// keyboard's dismissal animation and one throttle window with room to
+    /// spare; nothing is laid out in that time unless something is out of
+    /// place.
+    private static let comingBackWindow: CFTimeInterval = 3
+
+    /// After a pass that handed the engine a new size, one look back for the
+    /// layer: a sync the throttle deferred lands outside the pass that asked
+    /// for it.
+    private static let comingBackVerificationDelay: TimeInterval = 0.2
+
+    /// No two full passes closer together than a throttle window, so a
+    /// surface that cannot take a size yet — a session still connecting —
+    /// does not queue one resize per runloop turn.
+    private static let comingBackPassInterval: CFTimeInterval = 0.3
+
+    private var comingBackDeadline: CFTimeInterval = 0
+    private var comingBackPassScheduled = false
+    private var lastFullPassAt: CFTimeInterval = 0
+
+    /// What the last full pass left the view at. A return at the same size
+    /// and scale has nothing to lay out: only a layer that fell out of place
+    /// is put back (`placePictureLayers`), so coming back to the front does
+    /// not reflow a terminal that never moved.
+    private var lastRedrawSize: CGSize = .zero
+    private var lastRedrawScale: CGFloat = 0
+
+    /// Registered once, for the life of the view (`observeComingBack`), and
+    /// removed in `deinit`. A view is made whenever a surface mounts, so the
+    /// guard matters: `didMoveToWindow` runs again on every reattach.
+    private func observeComingBack() {
+        guard !observesComingBack else { return }
+        observesComingBack = true
+        let center = NotificationCenter.default
+        // The scene tells which window came back, and a scene can come back
+        // on its own (Stage Manager, an iPad with two windows); the app-level
+        // one is the return every window hears on iOS. Either ends in the
+        // same pass.
+        for name in [UIScene.didActivateNotification, UIApplication.didBecomeActiveNotification] {
+            center.addObserver(self, selector: #selector(backInFront(_:)), name: name, object: nil)
+        }
+    }
+
+    /// Nonisolated for the same reason the keyboard's observers are: the
+    /// notification is delivered on whatever thread posted it.
+    @objc private nonisolated func backInFront(_ notification: Notification) {
+        // Only the scene notification names a scene; the app-level one names
+        // the application, which says nothing about this view's window.
+        let sceneID = (notification.object as? UIScene).map(ObjectIdentifier.init)
+        Task { @MainActor [weak self] in
+            self?.noteBackInFront(fromScene: sceneID)
+        }
+    }
+
+    private func noteBackInFront(fromScene sceneID: ObjectIdentifier?) {
+        guard let window else { return }
+        if let sceneID, let scene = window.windowScene, ObjectIdentifier(scene) != sceneID {
+            return
+        }
+        guard UIApplication.shared.applicationState == .active else { return }
+        comingBackDeadline = CACurrentMediaTime() + Self.comingBackWindow
+        schedulePassAfterComingBack()
+    }
+
+    /// Coalesced to one pass per runloop turn: one return announces itself
+    /// twice (the scene and the app), and the layout that settles the new
+    /// bounds announces itself too (`layoutSubviews` below).
+    private func schedulePassAfterComingBack(delay: TimeInterval = 0) {
+        guard !comingBackPassScheduled, comingBackDeadline > 0 else { return }
+        comingBackPassScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { @MainActor [weak self] in
+            guard let self else { return }
+            comingBackPassScheduled = false
+            passAfterComingBack()
+        }
+    }
+
+    /// The bounds come back animated — a keyboard that was up is dismissed on
+    /// the way in — so the pass is asked for from here as well, where each
+    /// step of that animation lands, instead of once from the notification.
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard comingBackDeadline > 0 else { return }
+        schedulePassAfterComingBack()
+    }
+
+    private func passAfterComingBack() {
+        guard window != nil, comingBackDeadline > 0 else { return }
+        let now = CACurrentMediaTime()
+        guard now <= comingBackDeadline else {
+            comingBackDeadline = 0
+            return
+        }
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        let scale = engineScale
+        // The placement first, and on its own: it is the whole of the
+        // symptom, the surface can already be the size of the view while the
+        // layer that shows it is not, and putting a layer back lays nothing
+        // out — so a return that only lost the placement costs one
+        // comparison and a frame assignment.
+        let moved = placePictureLayers()
+        let unchanged = bounds.size == lastRedrawSize && scale == lastRedrawScale
+        guard !unchanged || surfaceLagsView(scale: scale) else {
+            if moved {
+                AppLog.info(.ghostty, "back in front: picture layer re-placed at \(sizeDescription)")
+            }
+            return
+        }
+        // A surface that cannot take a size yet — a session still connecting
+        // — is not a reason to give up: the pass comes back once the window
+        // allows, inside the same deadline.
+        let sinceLastPass = now - lastFullPassAt
+        guard sinceLastPass >= Self.comingBackPassInterval else {
+            schedulePassAfterComingBack(delay: Self.comingBackPassInterval - sinceLastPass)
+            return
+        }
+        lastFullPassAt = now
+        setNeedsLayout()
+        layoutIfNeeded()
+        fitToSize()
+        placePictureLayers()
+        lastRedrawSize = bounds.size
+        lastRedrawScale = engineScale
+        AppLog.info(
+            .ghostty,
+            "back in front: laid out and re-fit \(sizeDescription), \(pictureDescription)",
+        )
+        schedulePassAfterComingBack(delay: Self.comingBackVerificationDelay)
+    }
+
+    /// The scale the library renders at — its `resolvedDisplayScale`: the
+    /// window's screen when there is one to ask, the trait collection
+    /// otherwise. Not `contentScaleFactor`, which the library sets from it,
+    /// and which reads 1.0 on a view that has never been laid out.
+    private var engineScale: CGFloat {
+        if let scale = window?.screen.nativeScale, scale > 0 { return scale }
+        if traitCollection.displayScale > 0 { return traitCollection.displayScale }
+        return UIScreen.main.nativeScale
+    }
+
+    /// Every layer of the engine's, the one carrying the IOSurface among
+    /// them, put at the view's bounds at the screen's scale — where the
+    /// library would put it — and whether anything moved. Layers UIKit owns
+    /// for text input and menus carry a view behind them and are left alone;
+    /// a layer with no surface behind it has nothing drawn yet and is left to
+    /// the library as well.
+    @discardableResult
+    private func placePictureLayers() -> Bool {
+        let scale = engineScale
+        var moved = false
+        for sublayer in layer.sublayers ?? [] where !(sublayer.delegate is UIView) {
+            // Pixels that are not the size of the view are the library's to
+            // reconcile: while a resize throttle runs it holds the surface at
+            // the older size on purpose and keeps the layer that size, so the
+            // pixels it holds are shown 1:1 — a frame stretched to the bounds
+            // would show that picture scaled, the flicker that rule exists to
+            // prevent. Only a placement that lags a picture already the size
+            // of the view is ours to correct.
+            guard let surface = sublayer.contents as? IOSurface else { continue }
+            let width = Int((bounds.width * scale).rounded())
+            let height = Int((bounds.height * scale).rounded())
+            guard abs(surface.width - width) <= 1, abs(surface.height - height) <= 1 else {
+                continue
+            }
+            if sublayer.frame != bounds {
+                sublayer.frame = bounds
+                moved = true
+            }
+            if sublayer.contentsScale != scale {
+                sublayer.contentsScale = scale
+                moved = true
+            }
+        }
+        return moved
+    }
+
+    /// Whether the engine's picture is a size other than the view's — the
+    /// state the library's own sync is there to end, and one a pass has to
+    /// hand it a size for.
+    private func surfaceLagsView(scale: CGFloat) -> Bool {
+        let width = Int((bounds.width * scale).rounded())
+        let height = Int((bounds.height * scale).rounded())
+        for sublayer in layer.sublayers ?? [] where !(sublayer.delegate is UIView) {
+            guard let surface = sublayer.contents as? IOSurface else { continue }
+            if surface.width != width || surface.height != height { return true }
+        }
+        return false
+    }
+
+    private var sizeDescription: String {
+        String(format: "%.0fx%.0f pt", bounds.width, bounds.height)
+    }
+
+    /// The picture and the layer that shows it, for a journal that has to say
+    /// what the screen was told to draw when someone reports this again.
+    private var pictureDescription: String {
+        let pictures = (layer.sublayers ?? [])
+            .filter { !($0.delegate is UIView) }
+            .map { sublayer -> String in
+                let surface = sublayer.contents as? IOSurface
+                let pixels = surface.map { "\($0.width)x\($0.height)" } ?? "no surface"
+                return String(
+                    format: "%@ layer %.0fx%.0f @%.1f",
+                    pixels,
+                    sublayer.frame.width,
+                    sublayer.frame.height,
+                    sublayer.contentsScale,
+                )
+            }
+        return pictures.isEmpty ? "no picture layer" : pictures.joined(separator: "; ")
+    }
+
     /// A touch landed on a locked terminal — a tap or drag under the
     /// interaction lock, a tap that will raise no keyboard under the
     /// keyboard lock. The pane shows the lock's caption again, so a touch
@@ -510,6 +755,15 @@ final class LockableTerminalView: TerminalView {
     /// weakly, and non-nil is also the flag that the swap already happened.
     private var dropDelegate: TerminalDropDelegate?
 
+    /// Every observer this view takes is registered against `self` with a
+    /// selector, so one removal covers them all: the keyboard bar's, and the
+    /// return to the front's (`observeComingBack`). A view that goes away
+    /// with a pass still queued takes it with it — the pass holds the view
+    /// weakly and finds it gone.
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     /// Swaps the library's drop handling for the app's
     /// (`TerminalDropDelegate`): a real path on the Mac, a staged copy on
     /// iOS, folders on both, and named-by-type files for data that has no
@@ -531,6 +785,7 @@ final class LockableTerminalView: TerminalView {
         if !observesHardwareKeyboard {
             observeHardwareKeyboard()
         }
+        observeComingBack()
         guard window != nil, dropDelegate == nil else { return }
         for interaction in interactions where interaction is UIDropInteraction {
             removeInteraction(interaction)

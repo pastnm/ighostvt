@@ -1,0 +1,136 @@
+# A roothide package built on demand and published under one fixed Release
+# tag, so a device can install the branch under test from a direct link:
+#
+#   https://github.com/<owner>/<repo>/releases/download/deb-latest/<package>.deb
+#
+# This is not a release. `ci.yml` still builds and verifies every flavour on a
+# push, and `release.yml` still publishes what CI built when a tag is cut; no
+# version is bumped here and nothing is tagged. The point is a build from a
+# branch — a rendering fix waiting on a few hours of screen time, say — on
+# the device without waiting for a release, and without an APT repo or a
+# second token: the package goes to the repository's own Release, uploaded
+# with `GITHUB_TOKEN`, which is why this file asks for `contents: write`.
+#
+# The tag is reused, so it holds one package: the assets of the previous run
+# are removed before this run's are uploaded, and the notes say which commit
+# and package the link serves now. Keep the tag out of the version scheme
+# (`vX.Y.Z`) so `release.sh` never mistakes it for a release of its own.
+
+name: Deb release
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner label for the build
+        type: string
+        default: macos-26
+      tag:
+        description: Release tag the package is published under
+        type: string
+        default: deb-latest
+
+# The upload writes to the repository's releases; everything else is read.
+permissions:
+  contents: write
+
+# One tag, one package: a second dispatch waits for the first rather than
+# deleting the assets out from under it.
+concurrency:
+  group: ighostvt-deb-release-${{ github.event.inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  # The same floor ci.yml uses: the build number has to keep climbing past
+  # the counter the old publishing workflow left behind, or LaunchServices
+  # keeps reading the higher build's Info.plist.
+  BUILD_NUMBER_FLOOR: "100"
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  deb-roothide:
+    runs-on: ${{ github.event.inputs.runner }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out iGhostVT
+        uses: actions/checkout@v7
+
+      - name: Select newest Xcode
+        run: |
+          latest="$(ls -d /Applications/Xcode*.app | sort -V | tail -n1)"
+          sudo xcode-select -s "$latest/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install packaging tools
+        run: |
+          brew untap aws/tap 2>/dev/null || true
+          brew install ldid dpkg xcbeautify
+          ldid -h 2>&1 | head -n1 || true
+          dpkg-deb --version | head -n1
+
+      # The version stays the commit's; only the build number is this run's,
+      # taken from the same run counter ci.yml uses so a package built here
+      # never claims a build number a released one already used. Both are
+      # exported for the notes written at the end.
+      - name: Pin the build number to this run
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(make --no-print-directory print-version)"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          build="$(( GITHUB_RUN_NUMBER + BUILD_NUMBER_FLOOR ))"
+          make set-version VERSION="$version" BUILD="$build"
+          echo "APP_VERSION=$version" >> "$GITHUB_ENV"
+          echo "APP_BUILD=$build" >> "$GITHUB_ENV"
+
+      - name: Build roothide package (iphoneos-arm64e)
+        run: make deb-roothide
+
+      - name: Verify the package
+        run: |
+          set -euo pipefail
+          deb="$(ls build/Packages/*.deb)"
+          dpkg-deb -f "$deb" Package Version Architecture
+          [ "$(dpkg-deb -f "$deb" Architecture)" = iphoneos-arm64e ] \
+            || { echo "not a roothide package: $deb" >&2; exit 1; }
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd build/Packages
+          shasum -a 256 *.deb | tee SHA256SUMS.roothide
+
+      # The previous run's assets go first: one package per tag means a link
+      # never resolves to a file whose name the notes do not mention. The
+      # release is created on the first run and only edited after that, so
+      # the tag keeps pointing at the commit it was made for.
+      - name: Publish to the release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag }}"
+          description="Built by ${GITHUB_WORKFLOW} from ${GITHUB_SHA} at run ${GITHUB_RUN_NUMBER} — an on-demand package, not a release. Install it, then bring the app back to the front after a while off screen to check the fix."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # The API, not `gh release delete-asset`: the deletion is the
+            # point, so nothing here should be waiting on a confirmation.
+            for id in $(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq '.assets[].id'); do
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${id}"
+            done
+            gh release edit "$tag" --notes "$description"
+          else
+            gh release create "$tag" \
+              --target "$GITHUB_SHA" \
+              --title "iGhostVT dev builds" \
+              --notes "$description" \
+              --latest=false
+          fi
+          gh release upload "$tag" --clobber build/Packages/*.deb build/Packages/SHA256SUMS.roothide
+          echo "### Download" >> "$GITHUB_STEP_SUMMARY"
+          for deb in build/Packages/*.deb; do
+            url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/$(basename "$deb")"
+            echo "- [$url]($url)" >> "$GITHUB_STEP_SUMMARY"
+          done
+          gh release view "$tag" --json assets -q '.assets[] | "\(.name)\t\(.size)"'
